@@ -5,6 +5,8 @@ import pkg_resources
 import zipfile
 import urllib2
 
+import main as m
+
 # url of the ivy artifact
 ivy_url = "http://www.us.apache.org/dist//ant/ivy/2.4.0/apache-ivy-2.4.0-bin-with-deps.zip"
 
@@ -63,7 +65,7 @@ def plugin(plugin_id, name, version, sponge_api_version="2.1-SNAPSHOT", main="__
     # create the jar
     jar = zipfile.ZipFile(os.path.join('build', plugin_id + '.jar'), mode="w")
 
-    def add_jar_entry(dirname, fnames, arg):
+    def add_jar_entry(arg, dirname, fnames):
         for fname in fnames:
             fname = os.path.join(dirname, fname)
             if os.path.isfile(fname):
@@ -133,16 +135,18 @@ import org.spongepowered.api.plugin.Plugin;
 import org.python.util.PythonInterpreter;
 import org.python.core.PyStringMap;
 import org.python.core.Py;
+import org.python.core.PySystemState;
 
 @Plugin(id = "{}", name = "{}", version = "{}")
 public class PyPlugin {{
     @Listener
     public void init(GameConstructionEvent e) {{
+        PySystemState.initialize();
         PyStringMap locals = new PyStringMap();
         locals.__setitem__("this", Py.java2py(this));
 
         PythonInterpreter interpreter = new PythonInterpreter(locals);
-        interpreter.eval(
+        interpreter.exec(
             "import sys; sys.path.append(\\"{}\\"); import {} as m; m.start(this)");
     }}
 }}

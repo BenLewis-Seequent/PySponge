@@ -2,3 +2,8 @@
 .idea
 *.class
 example/**/build
+
+# Sponge source
+Sponge
+
+out
