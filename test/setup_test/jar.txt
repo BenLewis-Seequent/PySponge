@@ -1,0 +1,6 @@
+example_jar/PyPlugin.class
+Lib/dev.py
+Lib/dev_bundle.py
+Lib/jar.py
+Lib/jar_bundle.py
+Lib/setup_test.py

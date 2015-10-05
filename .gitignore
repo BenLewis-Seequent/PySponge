@@ -1,7 +1,10 @@
 *.iml
 .idea
 *.class
+
+# build directories
 example/**/build
+test/setup_test/build_*
 
 # Sponge source
 Sponge

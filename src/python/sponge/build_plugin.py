@@ -1,17 +1,72 @@
 
 import os
+import sys
 import subprocess
 import pkg_resources
 import zipfile
 import urllib2
 
-import main as m
+import re
 
 # url of the ivy artifact
 ivy_url = "http://www.us.apache.org/dist//ant/ivy/2.4.0/apache-ivy-2.4.0-bin-with-deps.zip"
 
+jython_jar_pattern = re.compile(".*jython-standalone-[0-9.]+\.jar")
 
-def plugin(plugin_id, name, version, sponge_api_version="2.1-SNAPSHOT", main="__main__", build_dir ='build'):
+
+def plugin(plugin_id,
+           name,
+           version,
+           sponge_api_version="2.1-SNAPSHOT",
+           main="__main__",
+           build_dir ='build',
+           task=None,
+           bundle_jython=True):
+    """
+    Builds a skeleton of a pysponge plugin.
+
+    The output is a jar file within the build directory and if that jar
+    is placed in the 'mods' folder of a Sponge profile/server it loads
+    the plugin.
+
+    The expected usage is that there is a 'setup.py' at the root of the
+    source directory of the plugin. And in that file there is a call to this
+    method. So to run the setup, navigate to the root of the source directory
+    and run 'python setup.py'.
+
+    There are two tasks this method accepts()passed by either the task parameter
+    or command line argument):
+        'dev' - Builds the jar so that it looks for the python files of the
+                plugin in the current working directory when invoking this
+                method.
+
+                So any changes made to the python files are reflected
+                immediately upon restart of sponge without the need to rerun
+                this method.
+
+        'jar' - Builds the jar so that the python files of the plugin are
+                bundled within the jar. This is used to distribute the
+                plugins.
+
+    :param plugin_id:          id of the plugin
+    :param name:               human readable name of the plugin
+    :param version:            version of the plugin
+    :param sponge_api_version: Sponge API version to compile against
+    :param main:               name of the plugins main module
+    :param build_dir:          directory in which this method uses for its
+                               output and temporary files
+    :param task:               task to perform
+    :param bundle_jython:      whether to bundle standalone jython jar inside
+                               the output jar. If false jython needs to be on
+                               the classpath when running the plugin.
+    """
+    if task is None:
+        if len(sys.argv) <= 1:
+            raise RuntimeError("No task specified. Either pass it as an method or command line argument")
+        task = sys.argv[1]
+    if task not in ["dev", "jar"]:
+        raise RuntimeError("Unknown task "+task)
+
     # create build directory if empty
     if not os.path.exists(build_dir):
         os.mkdir(build_dir)
@@ -46,13 +101,13 @@ def plugin(plugin_id, name, version, sponge_api_version="2.1-SNAPSHOT", main="__
         os.makedirs(package_dir)
 
     # create java plugin file
-    plugin_class = _gen_source(plugin_id, name, version, main)
+    plugin_class = _gen_source(plugin_id, name, version, main, task == 'jar')
     plugin_class_filename = os.path.join(package_dir, "PyPlugin.java")
     plugin_class_file = file(plugin_class_filename, 'w')
     plugin_class_file.write(plugin_class)
     plugin_class_file.close()
 
-    classes_dir = os.path.join('build', 'classes')
+    classes_dir = os.path.join(build_dir, 'classes')
     if not os.path.exists(classes_dir):
         os.mkdir(classes_dir)
 
@@ -63,16 +118,35 @@ def plugin(plugin_id, name, version, sponge_api_version="2.1-SNAPSHOT", main="__
                      plugin_class_filename])
 
     # create the jar
-    jar = zipfile.ZipFile(os.path.join('build', plugin_id + '.jar'), mode="w")
+    jar = zipfile.ZipFile(os.path.join(build_dir, '{}-{}.jar'.format(plugin_id, version)), mode="w")
 
     def add_jar_entry(arg, dirname, fnames):
+        base, out, func = arg
         for fname in fnames:
             fname = os.path.join(dirname, fname)
-            if os.path.isfile(fname):
-                rel = os.path.relpath(fname, arg)
-                jar.write(fname, rel)
+            if os.path.isfile(fname) and func(fname):
+                rel = os.path.relpath(fname, base)
+                if out is None:
+                    path = rel
+                else:
+                    path = os.path.join(out, rel)
+                jar.write(fname, path)
 
-    os.path.walk(classes_dir, add_jar_entry, classes_dir)
+    os.path.walk(classes_dir,
+                 add_jar_entry,
+                 (classes_dir, None, lambda f: f.endswith(".class")))
+
+    if task == "jar":
+        # add python files under Lib directory in the the jar
+        os.path.walk(".",
+                     add_jar_entry,
+                     (".", "Lib", lambda f: f.endswith(".py")))
+
+    if bundle_jython:
+        for item in classpath.split(':'):
+            if jython_jar_pattern.match(item) is not None:
+                _copy_jython(jar, item)
+
     jar.close()
 
 
@@ -123,9 +197,14 @@ def _gen_ivy_file(api_version):
 </ivy-module>""".format(api_version)
 
 
-def _gen_source(id, name, version, main):
+def _gen_source(plugin_id, name, version, main, bundled):
     if main.endswith(".py"):
         main = main[:-3]
+    py_exec = 'import {} as m; m.start(this)'.format(main)
+    if not bundled:
+        py_exec = \
+            'import sys; sys.path.append(\\"{}\\");'.format(os.getcwd()) + \
+            py_exec
     return """// file is auto generated by build_plugin.py
 package {};
 import org.spongepowered.api.event.Listener;
@@ -146,8 +225,14 @@ public class PyPlugin {{
         locals.__setitem__("this", Py.java2py(this));
 
         PythonInterpreter interpreter = new PythonInterpreter(locals);
-        interpreter.exec(
-            "import sys; sys.path.append(\\"{}\\"); import {} as m; m.start(this)");
+        interpreter.exec("{}");
     }}
 }}
-""".format(id, id, name, version, os.getcwd(), main)
+""".format(plugin_id, plugin_id, name, version, py_exec)
+
+
+def _copy_jython(jar, jython_path):
+    jython_jar = zipfile.ZipFile(jython_path)
+    for entry in jython_jar.filelist:
+        entry_data = jython_jar.read(entry)
+        jar.writestr(entry, entry_data)
