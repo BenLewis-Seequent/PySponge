@@ -1,6 +1,7 @@
 
 import os
 import sys
+import shutil
 import subprocess
 import pkg_resources
 import zipfile
@@ -11,7 +12,46 @@ import re
 # url of the ivy artifact
 ivy_url = "http://www.us.apache.org/dist//ant/ivy/2.4.0/apache-ivy-2.4.0-bin-with-deps.zip"
 
-jython_jar_pattern = re.compile(".*jython-standalone-[0-9.]+\.jar")
+jython_jar_pattern = re.compile(".*jython-standalone-[0-9.b]+\.jar")
+
+
+class Injection(object):
+    """
+    Model of a java field that is injected in by guice
+    """
+    def __init__(self, clazz, field):
+        """
+        Creates an injection
+
+        :param clazz: fully qualified name of the type of the field
+        :param field: field name
+        """
+        self.clazz = clazz
+        self.field = field
+        self.annotations = {}
+
+    def add_annotation(self, name, **args):
+        """
+        Add an annotation to the field
+
+        :param name: fully qualified name of the annotation
+        :param args: key-value pairs for the arguments of the annotation
+        """
+        self.annotations[name] = args
+
+game_injection = Injection("org.spongepowered.api.Game", "game")
+logger_injection = Injection("org.slf4j.Logger", "logger")
+event_manager_injection = Injection("org.spongepowered.api.service.event.EventManager", "event_manager")
+# TODO add the other injectors
+default_injections = [game_injection, logger_injection, event_manager_injection]
+
+
+class PluginResult(object):
+    def __init__(self, jar):
+        self.jar = jar
+
+    def install(self, game_directory):
+        shutil.copy(self.jar, os.path.join(game_directory, 'mods'))
 
 
 def plugin(plugin_id,
@@ -19,6 +59,7 @@ def plugin(plugin_id,
            version,
            sponge_api_version="2.1-SNAPSHOT",
            main="__main__",
+           injections=default_injections,
            build_dir ='build',
            task=None,
            bundle_jython=True):
@@ -53,12 +94,16 @@ def plugin(plugin_id,
     :param version:            version of the plugin
     :param sponge_api_version: Sponge API version to compile against
     :param main:               name of the plugins main module
+    :param injections:         list of injections to add to the generated plugin
+                               class
     :param build_dir:          directory in which this method uses for its
                                output and temporary files
     :param task:               task to perform
     :param bundle_jython:      whether to bundle standalone jython jar inside
                                the output jar. If false jython needs to be on
                                the classpath when running the plugin.
+    :rtype: PluginResult
+    :return: object representing the result of the task
     """
     if task is None:
         if len(sys.argv) <= 1:
@@ -70,8 +115,16 @@ def plugin(plugin_id,
     # create build directory if empty
     if not os.path.exists(build_dir):
         os.mkdir(build_dir)
-    ivy = _setup_ivy(build_dir)
 
+    # gen interface
+    interface_dir = os.path.join("interface", "sponge")
+    if not os.path.exists(interface_dir):
+        os.makedirs(interface_dir)
+    with open(os.path.join(interface_dir, "inject.pyi"), 'w') as f:
+        f.write(_gen_interface(injections))
+
+    # setup ivy distribution
+    ivy = _setup_ivy(build_dir)
     # ivy config files
     ivy_file_name = os.path.join(build_dir, "ivy.xml")
     ivy_file = file(ivy_file_name, "w")
@@ -101,7 +154,7 @@ def plugin(plugin_id,
         os.makedirs(package_dir)
 
     # create java plugin file
-    plugin_class = _gen_source(plugin_id, name, version, main, task == 'jar')
+    plugin_class = _gen_source(plugin_id, name, version, main, task == 'jar', injections)
     plugin_class_filename = os.path.join(package_dir, "PyPlugin.java")
     plugin_class_file = file(plugin_class_filename, 'w')
     plugin_class_file.write(plugin_class)
@@ -118,7 +171,8 @@ def plugin(plugin_id,
                      plugin_class_filename])
 
     # create the jar
-    jar = zipfile.ZipFile(os.path.join(build_dir, '{}-{}.jar'.format(plugin_id, version)), mode="w")
+    jar_filename = os.path.join(build_dir, '{}-{}.jar'.format(plugin_id, version))
+    jar = zipfile.ZipFile(jar_filename, mode="w")
 
     def add_jar_entry(arg, dirname, fnames):
         base, out, func = arg
@@ -135,6 +189,12 @@ def plugin(plugin_id,
     os.path.walk(classes_dir,
                  add_jar_entry,
                  (classes_dir, None, lambda f: f.endswith(".class")))
+    # copy binding python source files
+    py_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    build_file = os.path.join(py_root, "sponge", "build_plugin.py")
+    os.path.walk(py_root,
+                 add_jar_entry,
+                 (py_root, "Lib", lambda f: f.endswith(".py") and f != build_file))
 
     if task == "jar":
         # add python files under Lib directory in the the jar
@@ -148,6 +208,7 @@ def plugin(plugin_id,
                 _copy_jython(jar, item)
 
     jar.close()
+    return PluginResult(jar_filename)
 
 
 def _setup_ivy(build_dir):
@@ -192,12 +253,12 @@ def _gen_ivy_file(api_version):
         module="PySponge"/>
   <dependencies>
       <dependency org="org.spongepowered" name="spongeapi" rev="{}"/>
-      <dependency org="org.python" name="jython-standalone" rev="2.7.0"/>
+      <dependency org="org.python" name="jython-standalone" rev="2.7.1b2"/>
   </dependencies>
 </ivy-module>""".format(api_version)
 
 
-def _gen_source(plugin_id, name, version, main, bundled):
+def _gen_source(plugin_id, name, version, main, bundled, injections):
     if main.endswith(".py"):
         main = main[:-3]
     py_exec = 'import {} as m; m.start(this)'.format(main)
@@ -205,11 +266,13 @@ def _gen_source(plugin_id, name, version, main, bundled):
         py_exec = \
             'import sys; sys.path.append(\\"{}\\");'.format(os.getcwd()) + \
             py_exec
-    return """// file is auto generated by build_plugin.py
+    header = """// file is auto generated by build_plugin.py
 package {};
 import org.spongepowered.api.event.Listener;
 import org.spongepowered.api.event.game.state.GameConstructionEvent;
 import org.spongepowered.api.plugin.Plugin;
+
+import com.google.inject.Inject;
 
 import org.python.util.PythonInterpreter;
 import org.python.core.PyStringMap;
@@ -218,7 +281,12 @@ import org.python.core.PySystemState;
 
 @Plugin(id = "{}", name = "{}", version = "{}")
 public class PyPlugin {{
-    @Listener
+
+""".format(plugin_id, plugin_id, name, version)
+
+    fields = "".join(map(_gen_injection, injections))
+
+    return header + fields + """    @Listener
     public void init(GameConstructionEvent e) {{
         PySystemState.initialize();
         PyStringMap locals = new PyStringMap();
@@ -228,7 +296,39 @@ public class PyPlugin {{
         interpreter.exec("{}");
     }}
 }}
-""".format(plugin_id, plugin_id, name, version, py_exec)
+""".format(py_exec)
+
+
+def _gen_injection(injection):
+    def _gen_annotation(annotation, args):
+        if len(args):
+            return "@{}({}){}    ".format(
+                annotation,
+                ", ".join(["{} = {}".format(k, v) for k, v in args.iteritems()]),
+                os.linesep)
+        else:
+            return "@{}".format(annotation)
+
+    annotations = ''.join(
+        [_gen_annotation(k, v) for k, v in injection.annotations.iteritems()])
+    return """    @Inject
+    {}public {} {};
+
+""".format(annotations, injection.clazz, injection.field)
+
+
+def _gen_interface(injections):
+    def _gen_import(injection):
+        return "import {}".format(injection.clazz)
+
+    def _gen_declarations(injection):
+        return "{} = ...  # type: {}".format(injection.field,
+                                             injection.clazz)
+
+    return "{}{}{}{}".format(os.linesep.join(map(_gen_import, injections)),
+                             os.linesep*2,
+                             os.linesep.join(map(_gen_declarations, injections)),
+                             os.linesep)
 
 
 def _copy_jython(jar, jython_path):

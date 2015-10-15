@@ -4,9 +4,7 @@
 
 # build directories
 example/**/build
+example/**/interface
 test/setup_test/build_*
-
-# Sponge source
-Sponge
 
 out

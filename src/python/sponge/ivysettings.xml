@@ -3,6 +3,7 @@
   <resolvers>
     <chain name="chain">
       <ibiblio name="sponge" m2compatible="true" root="http://repo.spongepowered.org/maven"/>
+      <ibiblio name="sonatype" m2compatible="true" root="https://oss.sonatype.org/content/repositories/orgpython-1058"/>
       <ibiblio name="central" m2compatible="true" />
     </chain>
   </resolvers>
