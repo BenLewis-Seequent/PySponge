@@ -1,6 +1,6 @@
 import os
 
-from sponge import *
+from py_sponge import *
 
 p = plugin("example1",
            "Example Plugin",

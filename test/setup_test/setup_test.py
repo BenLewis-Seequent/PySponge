@@ -4,7 +4,7 @@ import shutil
 import zipfile
 import difflib
 
-from sponge import *
+from py_sponge import *
 
 # this script tests the setup/build logic
 

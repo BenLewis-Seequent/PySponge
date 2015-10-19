@@ -12,7 +12,11 @@ class Wrapped(object):
             return getattr(self.module, item)
         except AttributeError:
             caller = sys._getframe(1)
-            plugin = modules[caller.f_globals["__name__"]]
-            return getattr(plugin, item)
+            caller_name = caller.f_globals["__name__"]
+            if caller_name in modules:
+                plugin = modules[caller_name]
+                return getattr(plugin, item)
+            else:
+                raise RuntimeError("Unrecognised caller")
 
 sys.modules[__name__] = Wrapped(sys.modules[__name__])
